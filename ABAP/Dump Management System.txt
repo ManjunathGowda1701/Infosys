@@ -1,0 +1,255 @@
+*&---------------------------------------------------------------------*
+*& Report ZDUMP_AUDIT_SYS
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zdump_audit_sys.
+
+DATA: l_o_send_request  TYPE REF TO cl_bcs,
+      l_o_sender        TYPE REF TO if_sender_bcs VALUE IS INITIAL,
+      l_o_recipient     TYPE REF TO if_recipient_bcs,
+      lv_sender_address TYPE adr6-smtp_addr,
+      l_o_document      TYPE REF TO cl_document_bcs,
+      bcs_exception     TYPE REF TO cx_bcs.
+
+DATA: lt_message TYPE TABLE OF solisti1,
+      ls_message TYPE solisti1.
+
+DATA: lv_subject TYPE so_obj_des.
+
+DATA lv_rec_add TYPE adr6-smtp_addr.
+
+DATA : lt_zsap_dump TYPE TABLE OF zsap_dump_snap,
+       so_comp      TYPE RANGE OF snap_adt-component.
+
+
+SELECT a~mainprog, a~runtime_error, a~object_name, a~devclass, a~component, a~package_path,
+       a~uname, a~datum, a~uzeit, a~exc
+         FROM snap_adt AS a
+         LEFT JOIN zsap_dump_snap AS b
+         ON a~mainprog = b~mainprog
+         AND a~runtime_error = b~runtime_error
+         INTO TABLE @DATA(lt_snap)
+         WHERE a~datum = @sy-datum
+         AND b~mainprog IS NULL
+         AND b~runtime_error IS NULL.
+
+IF sy-subrc = 0.
+
+  SORT lt_snap BY mainprog runtime_error.
+  DELETE ADJACENT DUPLICATES FROM lt_snap COMPARING mainprog runtime_error.
+
+  lt_zsap_dump = VALUE #( FOR ls_temp IN lt_snap
+              ( mandt = sy-mandt
+                mainprog = ls_temp-mainprog
+                runtime_error = ls_temp-runtime_error
+                object_name = ls_temp-object_name
+                devclass = ls_temp-devclass
+                component = ls_temp-component
+                package_path = ls_temp-package_path
+                uname = ls_temp-uname
+                datum = ls_temp-datum
+                uzeit = ls_temp-uzeit
+                exc = ls_temp-exc ) ).
+
+  SELECT * FROM zsap_spoc_mail
+             INTO TABLE @DATA(lt_mail)
+             FOR ALL ENTRIES IN @lt_snap
+             WHERE zmodule = @lt_snap-component.
+***             AND devclass = @lt_snap-devclass.
+
+  so_comp = VALUE #( FOR ls_temp1 IN lt_mail
+                    ( sign = 'I'
+                      option = 'EQ'
+                      low = ls_temp1-zmodule ) ).
+
+  DELETE lt_zsap_dump WHERE component NOT IN so_comp.
+
+  LOOP AT lt_snap INTO DATA(ls_snap).
+
+    DATA(lv_component) = ls_snap-component.
+
+    TRY .
+        lv_sender_address = 'Messenger@Infosys.com'.
+        l_o_send_request = cl_bcs=>create_persistent( ).
+
+        l_o_sender = cl_cam_address_bcs=>create_internet_address(
+        lv_sender_address ).
+        l_o_send_request->set_sender( i_sender = l_o_sender ).
+
+        IF lt_mail[] IS NOT INITIAL.
+          LOOP AT lt_mail INTO DATA(ls_mail) WHERE zmodule = ls_snap-component.
+
+            lv_rec_add = ls_mail-mail_id.
+            IF lv_rec_add IS NOT INITIAL.
+              l_o_recipient = cl_cam_address_bcs=>create_internet_address(
+              lv_rec_add ).
+              l_o_send_request->add_recipient(
+              i_recipient = l_o_recipient
+              i_express = 'X').
+            ENDIF.
+            CLEAR ls_mail.
+          ENDLOOP.
+        ENDIF.
+
+        ls_message-line = '<HTML><body><p>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = 'Dear Team,'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = |New Dumps has been raised as below|.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</p><TABLE  width = 100% border = "1">'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+
+        ls_message-line =  |<TR><td BGCOLOR = "#99bbff" ><B>Module</B> </td>| &
+         |<td BGCOLOR = "#99bbff" ><B>Package</B></td>| &
+         |<td BGCOLOR = "#99bbff" ><B>Main Program</B></td>|.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+        ls_message-line = |'<td BGCOLOR = "#99bbff" ><B>Object Name</B></td>| &
+        |<td BGCOLOR = "#99bbff" ><B>Runtime Error</B></td>| &
+        |<td BGCOLOR = "#99bbff" ><B>Exception</B></td>|.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+        ls_message-line = |<td BGCOLOR = "#99bbff" ><B>SAP ID</B></td>| &
+        |<td BGCOLOR = "#99bbff" ><B>Date</B></td>| &
+        |<td BGCOLOR = "#99bbff" ><B>Time</B></td></TR>|.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        LOOP AT lt_snap INTO DATA(ls_snap1) WHERE component = ls_snap-component.
+
+          ls_message-line = |<TR><td>| & |{ ls_snap1-component }| & |&nbsp;</td>| &
+                            |<td>| & |{ ls_snap1-devclass }| & |&nbsp;| &
+                            |<td>| & |{ ls_snap1-mainprog }| & |&nbsp;| &
+                            |<td>| & |{ ls_snap1-object_name }| & |&nbsp;|.
+          APPEND ls_message TO lt_message.
+          CLEAR: ls_message.
+          ls_message-line = |<td BGCOLOR = "#FF5733">| & |{ ls_snap1-runtime_error }| & |&nbsp;| &
+                            |<td BGCOLOR = "#FF5733">| & |{ ls_snap1-exc }| & |&nbsp;| &
+                            |<td>| & |{ ls_snap1-uname }| & |&nbsp;|.
+          APPEND ls_message TO lt_message.
+          CLEAR: ls_message.
+          ls_message-line = |<td>| & |{ ls_snap1-datum+6(2) }| & |/| & |{ ls_snap1-datum+4(2) }| & |/| & |{ ls_snap1-datum+0(4) }| & |&nbsp;| &
+                            |<td>| & |{ ls_snap1-uzeit+0(2) }| & |:| & |{ ls_snap1-uzeit+2(2) }| & |:| & |{ ls_snap1-uzeit+4(2) }| & |&nbsp;| &
+                            |</td></TR>|.
+          APPEND ls_message TO lt_message.
+          CLEAR: ls_message, ls_snap1.
+
+        ENDLOOP.
+
+        DELETE lt_snap WHERE component = ls_snap-component.
+
+        ls_message-line = '</TABLE>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = 'Regards,'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = 'SAP IT'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = 'Infosys pvt ltd.'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</br>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line =
+        'This is an Auto generated mail. Do not reply'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        ls_message-line = '</body></html>'.
+        APPEND ls_message TO lt_message.
+        CLEAR ls_message.
+
+        lv_subject = |Daily Dump Report - | & |{ ls_snap-component }|.
+
+        l_o_document = cl_document_bcs=>create_document(
+         i_type = 'HTM'
+         i_text = lt_message
+         i_subject = lv_subject
+
+         ).
+
+        l_o_send_request->set_document( l_o_document ).
+
+      CATCH cx_bcs INTO bcs_exception.
+
+    ENDTRY.
+
+    TRY.
+        l_o_send_request->send( ).
+      CATCH cx_bcs INTO bcs_exception.
+    ENDTRY.
+
+    CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
+
+    CLEAR ls_snap.
+    REFRESH lt_message.
+  ENDLOOP.
+
+  MODIFY zsap_dump_snap FROM TABLE lt_zsap_dump.
+  IF sy-subrc = 0.
+    COMMIT WORK.
+  ENDIF.
+
+ENDIF.
